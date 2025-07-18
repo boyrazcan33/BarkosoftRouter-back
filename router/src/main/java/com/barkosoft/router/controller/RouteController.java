@@ -21,9 +21,8 @@ public class RouteController {
             RouteResponse response = routeService.optimizeRoute(
                     request.getStartLatitude(),
                     request.getStartLongitude(),
-                    request.getCustomerIds()
+                    request.getCustomers()
             );
-
             return ResponseEntity.ok(response);
         } catch (Exception e) {
             RouteResponse errorResponse = new RouteResponse();
