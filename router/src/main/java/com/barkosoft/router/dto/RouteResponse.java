@@ -11,10 +11,10 @@ import java.util.List;
 public class RouteResponse {
 
     private List<Long> optimizedCustomerIds;
-    private Double totalDistance;
+    private String totalDistance;
     private String status;
 
-    public RouteResponse(List<Long> optimizedCustomerIds, Double totalDistance) {
+    public RouteResponse(List<Long> optimizedCustomerIds, String totalDistance) {
         this.optimizedCustomerIds = optimizedCustomerIds;
         this.totalDistance = totalDistance;
         this.status = "success";

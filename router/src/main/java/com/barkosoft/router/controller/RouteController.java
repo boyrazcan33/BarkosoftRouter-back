@@ -7,7 +7,6 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import jakarta.validation.Valid;
-import java.util.List;
 
 @RestController
 @RequestMapping("/api/route")
@@ -19,13 +18,12 @@ public class RouteController {
     @PostMapping("/optimize")
     public ResponseEntity<RouteResponse> optimizeRoute(@Valid @RequestBody RouteRequest request) {
         try {
-            List<Long> optimizedIds = routeService.optimizeRoute(
+            RouteResponse response = routeService.optimizeRoute(
                     request.getStartLatitude(),
                     request.getStartLongitude(),
                     request.getCustomerIds()
             );
 
-            RouteResponse response = new RouteResponse(optimizedIds, 0.0);
             return ResponseEntity.ok(response);
         } catch (Exception e) {
             RouteResponse errorResponse = new RouteResponse();
