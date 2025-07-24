@@ -64,7 +64,7 @@ public class RouteService {
                     .uri(url)
                     .retrieve()
                     .bodyToMono(String.class)
-                    .timeout(Duration.ofSeconds(120))
+                    .timeout(Duration.ofSeconds(300))
                     .block();
 
             return parseOptimizedRouteFromResponse(response, customers);
