@@ -34,9 +34,7 @@ public class KafkaRouteConsumer {
             backoff = @Backoff(delay = 2000, multiplier = 2.0),
             dltStrategy = org.springframework.kafka.retrytopic.DltStrategy.FAIL_ON_ERROR
     )
-    @KafkaListener(
-            topics = "route-optimization-requests"
-    )
+    @KafkaListener(topics = "route-optimization-requests")
     public void processBatch(RouteOptimizationMessage message,
                              @Header(KafkaHeaders.RECEIVED_TOPIC) String topic,
                              @Header(KafkaHeaders.RECEIVED_PARTITION) int partition,
@@ -54,7 +52,6 @@ public class KafkaRouteConsumer {
                     message.getBatch()
             );
 
-            // Extract distance value
             double distanceKm = parseDistanceFromResponse(batchResponse.getTotalDistance());
 
             BatchResult result = new BatchResult(
@@ -73,7 +70,6 @@ public class KafkaRouteConsumer {
         } catch (Exception e) {
             logger.error("Failed to process batch {} for job {}: {}", batchIndex, jobId, e.getMessage());
 
-            // Create fallback result with original order
             List<Long> fallbackIds = message.getBatch().stream()
                     .map(Customer::getMyId)
                     .collect(Collectors.toList());
@@ -87,7 +83,7 @@ public class KafkaRouteConsumer {
             errorResult.setErrorMessage(e.getMessage());
 
             jobTrackingService.addBatchResult(errorResult);
-            ack.acknowledge(); // Acknowledge to prevent infinite retry
+            ack.acknowledge();
         }
     }
 
