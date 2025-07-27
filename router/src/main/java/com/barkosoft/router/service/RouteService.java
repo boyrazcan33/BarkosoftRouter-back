@@ -60,17 +60,19 @@ public class RouteService {
             String url = String.format("%s/trip/v1/driving/%s?source=first&roundtrip=false",
                     osrmBaseUrl, coordinates.toString());
 
+            logger.info("Making OSRM request for {} customers", customers.size());
+
             String response = webClient.get()
                     .uri(url)
                     .retrieve()
                     .bodyToMono(String.class)
-                    .timeout(Duration.ofSeconds(30))
+                    .timeout(Duration.ofSeconds(60)) // TIMEOUT  30->60
                     .block();
 
             return parseOptimizedRouteFromResponse(response, customers);
 
         } catch (Exception e) {
-            logger.error("OSRM API call failed: {}", e.getMessage());
+            logger.error("OSRM API call failed for {} customers: {}", customers.size(), e.getMessage());
             throw new RuntimeException("Route optimization failed: " + e.getMessage());
         }
     }

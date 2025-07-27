@@ -35,8 +35,7 @@ public class KafkaRouteConsumer {
             dltStrategy = org.springframework.kafka.retrytopic.DltStrategy.FAIL_ON_ERROR
     )
     @KafkaListener(
-            topics = "route-optimization-requests",
-            concurrency = "#{${kafka.consumer.concurrency:10}}"
+            topics = "route-optimization-requests"
     )
     public void processBatch(RouteOptimizationMessage message,
                              @Header(KafkaHeaders.RECEIVED_TOPIC) String topic,

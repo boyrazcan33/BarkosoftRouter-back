@@ -26,6 +26,9 @@ public class KafkaConfig {
     @Value("${spring.kafka.consumer.group-id:route-optimization-group}")
     private String groupId;
 
+    @Value("${kafka.consumer.concurrency:5}")
+    private int concurrency;
+
     @Bean
     public ProducerFactory<String, RouteOptimizationMessage> producerFactory() {
         Map<String, Object> configProps = new HashMap<>();
@@ -61,6 +64,7 @@ public class KafkaConfig {
         ConcurrentKafkaListenerContainerFactory<String, RouteOptimizationMessage> factory =
                 new ConcurrentKafkaListenerContainerFactory<>();
         factory.setConsumerFactory(consumerFactory());
+        factory.setConcurrency(concurrency);
         factory.getContainerProperties().setAckMode(ContainerProperties.AckMode.MANUAL);
         return factory;
     }
