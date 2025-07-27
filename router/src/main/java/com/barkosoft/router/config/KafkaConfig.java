@@ -61,7 +61,7 @@ public class KafkaConfig {
         ConcurrentKafkaListenerContainerFactory<String, RouteOptimizationMessage> factory =
                 new ConcurrentKafkaListenerContainerFactory<>();
         factory.setConsumerFactory(consumerFactory());
-        factory.setConcurrency(5);
+        factory.setConcurrency(4);
         factory.getContainerProperties().setAckMode(ContainerProperties.AckMode.MANUAL);
         return factory;
     }

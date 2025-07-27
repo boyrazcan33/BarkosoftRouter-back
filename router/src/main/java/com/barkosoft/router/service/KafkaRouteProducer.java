@@ -17,7 +17,7 @@ public class KafkaRouteProducer {
 
     private static final Logger logger = LoggerFactory.getLogger(KafkaRouteProducer.class);
     private static final String TOPIC = "route-optimization-requests";
-    private static final int BATCH_SIZE = 50;
+    private static final int BATCH_SIZE = 90;
 
     @Autowired
     private KafkaTemplate<String, RouteOptimizationMessage> kafkaTemplate;
@@ -38,8 +38,9 @@ public class KafkaRouteProducer {
                     jobId, startLat, startLng, batches.get(i), i, batches.size()
             );
 
-            kafkaTemplate.send(TOPIC, String.valueOf(i % 5), message);
-            logger.debug("Sent batch {} for job {} to partition {}", i, jobId, i % 5);
+            int targetPartition = i % 5;
+            kafkaTemplate.send(TOPIC, targetPartition, UUID.randomUUID().toString(), message);
+            logger.debug("Sent batch {} for job {} to partition {}", i, jobId, targetPartition);
         }
 
         return jobId;
