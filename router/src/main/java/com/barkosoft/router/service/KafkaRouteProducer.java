@@ -38,8 +38,8 @@ public class KafkaRouteProducer {
                     jobId, startLat, startLng, batches.get(i), i, batches.size()
             );
 
-            kafkaTemplate.send(TOPIC, jobId, message);
-            logger.debug("Sent batch {} for job {}", i, jobId);
+            kafkaTemplate.send(TOPIC, String.valueOf(i % 5), message);
+            logger.debug("Sent batch {} for job {} to partition {}", i, jobId, i % 5);
         }
 
         return jobId;
