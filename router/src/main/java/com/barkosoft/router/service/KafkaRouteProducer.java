@@ -17,7 +17,7 @@ public class KafkaRouteProducer {
 
     private static final Logger logger = LoggerFactory.getLogger(KafkaRouteProducer.class);
     private static final String TOPIC = "route-optimization-requests";
-    private static final int BATCH_SIZE = 90;
+    private static final int BATCH_SIZE = 95;
 
     @Autowired
     private KafkaTemplate<String, RouteOptimizationMessage> kafkaTemplate;
