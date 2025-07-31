@@ -4,7 +4,7 @@ Free alternative to Google Maps Route Optimization API .
 
 ## Live Demo
 
-🌐 **Frontend:** [http://barkosoft-router.surge.sh](http://barkosoft-router.surge.sh)
+🌐 **Frontend:** [https://barkosoft-router.vercel.app]
 
 ## Why This Project?
 
@@ -57,7 +57,7 @@ npm start
 
 - **Frontend**: React 19 + TypeScript + Leaflet
 - **Backend**: Spring Boot + Kafka + OSRM
-- **Deployment**: Surge.sh + Google Cloud
+- **Deployment**: Vercel + Google Cloud
 
 ## Real-World Usage
 
