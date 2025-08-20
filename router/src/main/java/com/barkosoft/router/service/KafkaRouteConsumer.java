@@ -54,18 +54,22 @@ public class KafkaRouteConsumer {
 
             double distanceKm = parseDistanceFromResponse(batchResponse.getTotalDistance());
 
+            // Create BatchResult with geometry
             BatchResult result = new BatchResult(
                     jobId,
                     batchIndex,
                     batchResponse.getOptimizedCustomerIds(),
-                    distanceKm
+                    distanceKm,
+                    batchResponse.getRouteGeometry() // Pass geometry through
             );
 
             jobTrackingService.addBatchResult(result);
             ack.acknowledge();
 
-            logger.info("Completed batch {} for job {} with {} customers",
-                    batchIndex, jobId, batchResponse.getOptimizedCustomerIds().size());
+            logger.info("Completed batch {} for job {} with {} customers and {} geometry points",
+                    batchIndex, jobId,
+                    batchResponse.getOptimizedCustomerIds().size(),
+                    batchResponse.getRouteGeometry() != null ? batchResponse.getRouteGeometry().size() : 0);
 
         } catch (Exception e) {
             logger.error("Failed to process batch {} for job {}: {}", batchIndex, jobId, e.getMessage());
@@ -79,6 +83,7 @@ public class KafkaRouteConsumer {
             errorResult.setBatchIndex(batchIndex);
             errorResult.setOptimizedCustomerIds(fallbackIds);
             errorResult.setDistanceKm(0.0);
+            errorResult.setRouteGeometry(null); // No geometry on error
             errorResult.setSuccess(false);
             errorResult.setErrorMessage(e.getMessage());
 

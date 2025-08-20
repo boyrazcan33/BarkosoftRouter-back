@@ -40,7 +40,9 @@ public class JobTrackingService {
         }
 
         batchResults.put(batchResult.getBatchIndex(), batchResult);
-        logger.info("Received batch {} result for job {}", batchResult.getBatchIndex(), jobId);
+        logger.info("Received batch {} result for job {} with {} geometry points",
+                batchResult.getBatchIndex(), jobId,
+                batchResult.getRouteGeometry() != null ? batchResult.getRouteGeometry().size() : 0);
 
         // Check if all batches completed
         if (batchResults.size() == status.getTotalBatches()) {
@@ -51,7 +53,10 @@ public class JobTrackingService {
             if (latch != null) {
                 latch.countDown();
             }
-            logger.info("Job {} completed with {} customer IDs", jobId, finalResponse.getOptimizedCustomerIds().size());
+            logger.info("Job {} completed with {} customer IDs and {} geometry points",
+                    jobId,
+                    finalResponse.getOptimizedCustomerIds().size(),
+                    finalResponse.getRouteGeometry() != null ? finalResponse.getRouteGeometry().size() : 0);
         }
     }
 
@@ -82,6 +87,7 @@ public class JobTrackingService {
 
     private RouteResponse aggregateResults(String jobId, Map<Integer, BatchResult> batchResults) {
         List<Long> allCustomerIds = new ArrayList<>();
+        List<List<Double>> combinedGeometry = new ArrayList<>();
         double totalDistance = 0.0;
         List<BatchResult> failedBatches = new ArrayList<>();
 
@@ -89,11 +95,28 @@ public class JobTrackingService {
         List<Integer> sortedIndices = new ArrayList<>(batchResults.keySet());
         sortedIndices.sort(Integer::compareTo);
 
-        for (Integer batchIndex : sortedIndices) {
+        for (int i = 0; i < sortedIndices.size(); i++) {
+            Integer batchIndex = sortedIndices.get(i);
             BatchResult result = batchResults.get(batchIndex);
+
             if (result.isSuccess()) {
                 allCustomerIds.addAll(result.getOptimizedCustomerIds());
                 totalDistance += result.getDistanceKm();
+
+                // Aggregate geometry - avoid duplicate points at batch boundaries
+                if (result.getRouteGeometry() != null && !result.getRouteGeometry().isEmpty()) {
+                    if (i == 0) {
+                        // First batch - add all points
+                        combinedGeometry.addAll(result.getRouteGeometry());
+                    } else {
+                        // Subsequent batches - skip first point to avoid duplicate
+                        if (result.getRouteGeometry().size() > 1) {
+                            combinedGeometry.addAll(
+                                    result.getRouteGeometry().subList(1, result.getRouteGeometry().size())
+                            );
+                        }
+                    }
+                }
             } else {
                 failedBatches.add(result);
                 logger.warn("Batch {} failed for job {}: {}", batchIndex, jobId, result.getErrorMessage());
@@ -105,7 +128,15 @@ public class JobTrackingService {
         }
 
         String formattedDistance = String.format("%.3f km", totalDistance).replace(".", ",");
-        return new RouteResponse(allCustomerIds, formattedDistance);
+
+        // Log geometry aggregation result
+        logger.info("Aggregated {} geometry points for job {}", combinedGeometry.size(), jobId);
+
+        return new RouteResponse(
+                allCustomerIds,
+                formattedDistance,
+                combinedGeometry.isEmpty() ? null : combinedGeometry
+        );
     }
 
     private RouteResponse createErrorResponse(String message) {
@@ -113,6 +144,7 @@ public class JobTrackingService {
         response.setOptimizedCustomerIds(new ArrayList<>());
         response.setTotalDistance("0,000 km");
         response.setStatus("error: " + message);
+        response.setRouteGeometry(null);
         return response;
     }
 
