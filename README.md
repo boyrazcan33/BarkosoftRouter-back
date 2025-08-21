@@ -32,7 +32,7 @@ Free alternative to Google Maps Route Optimization API .
 - **Connection pooling**: WebClient with connection reuse
 - **Timeout handling**: 60-second API timeouts
 - **Memory efficient**: Streaming batch results
-- **CDN delivery**: Global deployment via Surge.sh
+- **CDN delivery**: Global deployment via Vercel
 
 ## Quick Start
 
