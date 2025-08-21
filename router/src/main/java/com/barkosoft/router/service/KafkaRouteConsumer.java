@@ -54,22 +54,24 @@ public class KafkaRouteConsumer {
 
             double distanceKm = parseDistanceFromResponse(batchResponse.getTotalDistance());
 
-            // Create BatchResult with geometry
+            // Create BatchResult with geometry and mapping
             BatchResult result = new BatchResult(
                     jobId,
                     batchIndex,
                     batchResponse.getOptimizedCustomerIds(),
                     distanceKm,
-                    batchResponse.getRouteGeometry() // Pass geometry through
+                    batchResponse.getRouteGeometry(),
+                    batchResponse.getCustomerGeometryMapping() // Pass mapping through
             );
 
             jobTrackingService.addBatchResult(result);
             ack.acknowledge();
 
-            logger.info("Completed batch {} for job {} with {} customers and {} geometry points",
+            logger.info("Completed batch {} for job {} with {} customers, {} geometry points, and {} mappings",
                     batchIndex, jobId,
                     batchResponse.getOptimizedCustomerIds().size(),
-                    batchResponse.getRouteGeometry() != null ? batchResponse.getRouteGeometry().size() : 0);
+                    batchResponse.getRouteGeometry() != null ? batchResponse.getRouteGeometry().size() : 0,
+                    batchResponse.getCustomerGeometryMapping() != null ? batchResponse.getCustomerGeometryMapping().size() : 0);
 
         } catch (Exception e) {
             logger.error("Failed to process batch {} for job {}: {}", batchIndex, jobId, e.getMessage());
@@ -83,7 +85,8 @@ public class KafkaRouteConsumer {
             errorResult.setBatchIndex(batchIndex);
             errorResult.setOptimizedCustomerIds(fallbackIds);
             errorResult.setDistanceKm(0.0);
-            errorResult.setRouteGeometry(null); // No geometry on error
+            errorResult.setRouteGeometry(null);
+            errorResult.setCustomerGeometryMapping(null); // No mapping on error
             errorResult.setSuccess(false);
             errorResult.setErrorMessage(e.getMessage());
 

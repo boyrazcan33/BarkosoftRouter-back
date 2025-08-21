@@ -40,9 +40,10 @@ public class JobTrackingService {
         }
 
         batchResults.put(batchResult.getBatchIndex(), batchResult);
-        logger.info("Received batch {} result for job {} with {} geometry points",
+        logger.info("Received batch {} result for job {} with {} geometry points and {} mappings",
                 batchResult.getBatchIndex(), jobId,
-                batchResult.getRouteGeometry() != null ? batchResult.getRouteGeometry().size() : 0);
+                batchResult.getRouteGeometry() != null ? batchResult.getRouteGeometry().size() : 0,
+                batchResult.getCustomerGeometryMapping() != null ? batchResult.getCustomerGeometryMapping().size() : 0);
 
         // Check if all batches completed
         if (batchResults.size() == status.getTotalBatches()) {
@@ -53,10 +54,11 @@ public class JobTrackingService {
             if (latch != null) {
                 latch.countDown();
             }
-            logger.info("Job {} completed with {} customer IDs and {} geometry points",
+            logger.info("Job {} completed with {} customer IDs, {} geometry points, and {} mappings",
                     jobId,
                     finalResponse.getOptimizedCustomerIds().size(),
-                    finalResponse.getRouteGeometry() != null ? finalResponse.getRouteGeometry().size() : 0);
+                    finalResponse.getRouteGeometry() != null ? finalResponse.getRouteGeometry().size() : 0,
+                    finalResponse.getCustomerGeometryMapping() != null ? finalResponse.getCustomerGeometryMapping().size() : 0);
         }
     }
 
@@ -88,8 +90,9 @@ public class JobTrackingService {
     private RouteResponse aggregateResults(String jobId, Map<Integer, BatchResult> batchResults) {
         List<Long> allCustomerIds = new ArrayList<>();
         List<List<Double>> combinedGeometry = new ArrayList<>();
+        Map<Long, int[]> combinedMapping = new HashMap<>();
         double totalDistance = 0.0;
-        List<BatchResult> failedBatches = new ArrayList<>();
+        int geometryOffset = 0;
 
         // Sort by batch index to maintain order
         List<Integer> sortedIndices = new ArrayList<>(batchResults.keySet());
@@ -103,7 +106,8 @@ public class JobTrackingService {
                 allCustomerIds.addAll(result.getOptimizedCustomerIds());
                 totalDistance += result.getDistanceKm();
 
-                // Aggregate geometry - avoid duplicate points at batch boundaries
+                // Aggregate geometry
+                int batchGeometryStart = combinedGeometry.size();
                 if (result.getRouteGeometry() != null && !result.getRouteGeometry().isEmpty()) {
                     if (i == 0) {
                         // First batch - add all points
@@ -117,25 +121,49 @@ public class JobTrackingService {
                         }
                     }
                 }
+
+                // Aggregate customer mapping with offset adjustment
+                if (result.getCustomerGeometryMapping() != null) {
+                    for (Map.Entry<Long, int[]> entry : result.getCustomerGeometryMapping().entrySet()) {
+                        int[] originalIndices = entry.getValue();
+                        // Adjust indices based on current geometry offset
+                        int adjustedStart = originalIndices[0] + geometryOffset;
+                        int adjustedEnd = originalIndices[1] + geometryOffset;
+
+                        // For subsequent batches, if we skipped first point, adjust by -1
+                        if (i > 0 && result.getRouteGeometry() != null && result.getRouteGeometry().size() > 1) {
+                            adjustedStart = Math.max(0, adjustedStart - 1);
+                            adjustedEnd = Math.max(0, adjustedEnd - 1);
+                        }
+
+                        combinedMapping.put(entry.getKey(), new int[]{adjustedStart, adjustedEnd});
+                    }
+                }
+
+                // Update offset for next batch
+                if (result.getRouteGeometry() != null) {
+                    if (i == 0) {
+                        geometryOffset = result.getRouteGeometry().size();
+                    } else if (result.getRouteGeometry().size() > 1) {
+                        // We skipped first point, so add size - 1
+                        geometryOffset += result.getRouteGeometry().size() - 1;
+                    }
+                }
             } else {
-                failedBatches.add(result);
                 logger.warn("Batch {} failed for job {}: {}", batchIndex, jobId, result.getErrorMessage());
             }
         }
 
-        if (!failedBatches.isEmpty()) {
-            logger.warn("Job {} had {} failed batches out of {}", jobId, failedBatches.size(), batchResults.size());
-        }
-
         String formattedDistance = String.format("%.3f km", totalDistance).replace(".", ",");
 
-        // Log geometry aggregation result
-        logger.info("Aggregated {} geometry points for job {}", combinedGeometry.size(), jobId);
+        logger.info("Aggregated {} geometry points and {} mappings for job {}",
+                combinedGeometry.size(), combinedMapping.size(), jobId);
 
         return new RouteResponse(
                 allCustomerIds,
                 formattedDistance,
-                combinedGeometry.isEmpty() ? null : combinedGeometry
+                combinedGeometry.isEmpty() ? null : combinedGeometry,
+                combinedMapping.isEmpty() ? null : combinedMapping
         );
     }
 
@@ -145,6 +173,7 @@ public class JobTrackingService {
         response.setTotalDistance("0,000 km");
         response.setStatus("error: " + message);
         response.setRouteGeometry(null);
+        response.setCustomerGeometryMapping(null);
         return response;
     }
 
