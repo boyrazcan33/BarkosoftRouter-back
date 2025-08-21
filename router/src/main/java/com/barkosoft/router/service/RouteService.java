@@ -18,7 +18,7 @@ import java.util.stream.Collectors;
 public class RouteService {
 
     private static final Logger logger = LoggerFactory.getLogger(RouteService.class);
-    private static final int BATCH_SIZE = 50; // Safety limit
+    private static final int BATCH_SIZE = 50;
 
     @Value("${osrm.base.url:http://router.project-osrm.org}")
     private String osrmBaseUrl;
@@ -28,7 +28,7 @@ public class RouteService {
 
     public RouteService() {
         this.webClient = WebClient.builder()
-                .codecs(configurer -> configurer.defaultCodecs().maxInMemorySize(1024 * 1024))
+                .codecs(configurer -> configurer.defaultCodecs().maxInMemorySize(10 * 1024 * 1024)) // 10MB limit
                 .build();
         this.objectMapper = new ObjectMapper();
     }
@@ -36,15 +36,13 @@ public class RouteService {
     public RouteResponse optimizeRoute(Double startLat, Double startLng, List<Customer> customers) {
         if (customers.isEmpty()) {
             logger.warn("No customers provided in request");
-            return new RouteResponse(new ArrayList<>(), "0,000 km", null);
+            return new RouteResponse(new ArrayList<>(), "0,000 km", null, null);
         }
 
-        // If customers <= 50, use single batch
         if (customers.size() <= BATCH_SIZE) {
             return optimizeSingleBatch(startLat, startLng, customers);
         }
 
-        // For large datasets, use simple batching (Kafka handles this better now)
         return optimizeWithBatching(startLat, startLng, customers);
     }
 
@@ -73,13 +71,15 @@ public class RouteService {
             RouteResponse optimizedRoute = parseOptimizedRouteFromResponse(tripResponse, customers);
 
             // Now get the actual road geometry using Route API
-            List<List<Double>> geometry = fetchRouteGeometry(startLat, startLng, customers, optimizedRoute.getOptimizedCustomerIds());
+            RouteGeometryResult geometryResult = fetchRouteGeometryWithMapping(
+                    startLat, startLng, customers, optimizedRoute.getOptimizedCustomerIds()
+            );
 
-            // Return response with geometry
             return new RouteResponse(
                     optimizedRoute.getOptimizedCustomerIds(),
                     optimizedRoute.getTotalDistance(),
-                    geometry
+                    geometryResult != null ? geometryResult.geometry : null,
+                    geometryResult != null ? geometryResult.customerMapping : null
             );
 
         } catch (Exception e) {
@@ -88,15 +88,24 @@ public class RouteService {
         }
     }
 
-    private List<List<Double>> fetchRouteGeometry(Double startLat, Double startLng,
-                                                  List<Customer> customers,
-                                                  List<Long> optimizedCustomerIds) {
+    private static class RouteGeometryResult {
+        List<List<Double>> geometry;
+        Map<Long, int[]> customerMapping;
+
+        RouteGeometryResult(List<List<Double>> geometry, Map<Long, int[]> customerMapping) {
+            this.geometry = geometry;
+            this.customerMapping = customerMapping;
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private RouteGeometryResult fetchRouteGeometryWithMapping(Double startLat, Double startLng,
+                                                              List<Customer> customers,
+                                                              List<Long> optimizedCustomerIds) {
         try {
-            // Create customer lookup map
             Map<Long, Customer> customerMap = customers.stream()
                     .collect(Collectors.toMap(Customer::getMyId, c -> c));
 
-            // Build coordinates in optimized order
             StringBuilder orderedCoordinates = new StringBuilder();
             orderedCoordinates.append(String.format("%f,%f", startLng, startLat));
 
@@ -108,11 +117,10 @@ public class RouteService {
                 }
             }
 
-            // Call OSRM Route API for geometry
-            String routeUrl = String.format("%s/route/v1/driving/%s?geometries=geojson&overview=full",
+            String routeUrl = String.format("%s/route/v1/driving/%s?geometries=geojson&overview=full&annotations=true",
                     osrmBaseUrl, orderedCoordinates.toString());
 
-            logger.info("Fetching route geometry for optimized path");
+            logger.info("Fetching route geometry with mapping for {} customers", optimizedCustomerIds.size());
 
             String routeResponse = webClient.get()
                     .uri(routeUrl)
@@ -121,45 +129,81 @@ public class RouteService {
                     .timeout(Duration.ofSeconds(30))
                     .block();
 
-            return parseGeometryFromRouteResponse(routeResponse);
-
-        } catch (Exception e) {
-            logger.error("Failed to fetch route geometry: {}", e.getMessage());
-            return null; // Return null if geometry fetch fails
-        }
-    }
-
-    @SuppressWarnings("unchecked")
-    private List<List<Double>> parseGeometryFromRouteResponse(String jsonResponse) {
-        try {
-            Map<String, Object> response = objectMapper.readValue(jsonResponse, Map.class);
-
+            Map<String, Object> response = objectMapper.readValue(routeResponse, Map.class);
             if (!"Ok".equals(response.get("code"))) {
-                logger.warn("OSRM Route API returned non-OK status: {}", response.get("code"));
+                logger.warn("OSRM returned non-OK status: {}", response.get("code"));
                 return null;
             }
 
             List<Map<String, Object>> routes = (List<Map<String, Object>>) response.get("routes");
             if (routes == null || routes.isEmpty()) {
-                logger.warn("No routes found in OSRM response");
+                logger.warn("No routes found in response");
                 return null;
             }
 
             Map<String, Object> route = routes.get(0);
-            Map<String, Object> geometry = (Map<String, Object>) route.get("geometry");
 
-            if (geometry == null || !geometry.containsKey("coordinates")) {
-                logger.warn("No geometry found in route");
-                return null;
+            // Get geometry
+            Map<String, Object> geometry = (Map<String, Object>) route.get("geometry");
+            List<List<Double>> coordinates = (List<List<Double>>) geometry.get("coordinates");
+
+            // Parse legs to create mapping
+            Map<Long, int[]> customerMapping = new HashMap<>();
+            List<Map<String, Object>> legs = (List<Map<String, Object>>) route.get("legs");
+
+            logger.info("Route has {} legs for {} customers", legs != null ? legs.size() : 0, optimizedCustomerIds.size());
+
+            if (legs != null && !legs.isEmpty()) {
+                int currentIndex = 0;
+
+                // Each leg represents a segment from one waypoint to the next
+                for (int i = 0; i < legs.size() && i < optimizedCustomerIds.size(); i++) {
+                    Map<String, Object> leg = legs.get(i);
+
+                    // Get the number of geometry points in this leg
+                    int legPointCount = 0;
+                    Map<String, Object> annotation = (Map<String, Object>) leg.get("annotation");
+
+                    if (annotation != null) {
+                        List<?> distances = (List<?>) annotation.get("distance");
+                        if (distances != null) {
+                            legPointCount = distances.size();
+                            logger.debug("Leg {} has {} points from annotation", i, legPointCount);
+                        }
+                    }
+
+                    // If no annotation, estimate based on distance
+                    if (legPointCount == 0) {
+                        Double distance = ((Number) leg.get("distance")).doubleValue();
+                        // Rough estimate: 1 point per 50 meters
+                        legPointCount = Math.max(1, (int)(distance / 50));
+                        logger.debug("Leg {} estimated {} points based on distance {}", i, legPointCount, distance);
+                    }
+
+                    Long customerId = optimizedCustomerIds.get(i);
+                    customerMapping.put(customerId, new int[]{currentIndex, currentIndex + legPointCount});
+                    logger.debug("Customer {} -> geometry points [{}, {}]", customerId, currentIndex, currentIndex + legPointCount);
+
+                    currentIndex += legPointCount;
+                }
+            } else {
+                logger.warn("No legs found in route response, creating simple mapping");
+                // Fallback: divide geometry equally among customers
+                if (!optimizedCustomerIds.isEmpty() && coordinates != null) {
+                    int pointsPerCustomer = coordinates.size() / optimizedCustomerIds.size();
+                    for (int i = 0; i < optimizedCustomerIds.size(); i++) {
+                        int start = i * pointsPerCustomer;
+                        int end = (i == optimizedCustomerIds.size() - 1) ? coordinates.size() : (i + 1) * pointsPerCustomer;
+                        customerMapping.put(optimizedCustomerIds.get(i), new int[]{start, end});
+                    }
+                }
             }
 
-            List<List<Double>> coordinates = (List<List<Double>>) geometry.get("coordinates");
-            logger.info("Retrieved {} geometry points from OSRM", coordinates.size());
-
-            return coordinates;
+            logger.info("Created geometry mapping for {} customers", customerMapping.size());
+            return new RouteGeometryResult(coordinates, customerMapping.isEmpty() ? null : customerMapping);
 
         } catch (Exception e) {
-            logger.error("Failed to parse geometry from OSRM response: {}", e.getMessage());
+            logger.error("Failed to fetch route geometry with mapping: {}", e.getMessage(), e);
             return null;
         }
     }
@@ -183,7 +227,6 @@ public class RouteService {
                 RouteResponse batchResponse = optimizeSingleBatch(lastLat, lastLng, batch);
                 allOptimizedIds.addAll(batchResponse.getOptimizedCustomerIds());
 
-                // Append geometry (skip first point of subsequent batches to avoid duplicates)
                 if (batchResponse.getRouteGeometry() != null) {
                     if (i == 0) {
                         combinedGeometry.addAll(batchResponse.getRouteGeometry());
@@ -195,7 +238,6 @@ public class RouteService {
                 String distanceStr = batchResponse.getTotalDistance().replace(" km", "").replace(",", ".");
                 totalDistance += Double.parseDouble(distanceStr);
 
-                // Update last position for next batch
                 if (!batch.isEmpty() && !batchResponse.getOptimizedCustomerIds().isEmpty()) {
                     Long lastCustomerId = batchResponse.getOptimizedCustomerIds().get(batchResponse.getOptimizedCustomerIds().size() - 1);
                     Customer lastCustomer = batch.stream()
@@ -217,7 +259,8 @@ public class RouteService {
         return new RouteResponse(
                 allOptimizedIds,
                 String.format("%.3f km", totalDistance).replace(".", ","),
-                combinedGeometry.isEmpty() ? null : combinedGeometry
+                combinedGeometry.isEmpty() ? null : combinedGeometry,
+                null
         );
     }
 
