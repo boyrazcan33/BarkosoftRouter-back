@@ -28,7 +28,7 @@ public class RouteService {
 
     public RouteService() {
         this.webClient = WebClient.builder()
-                .codecs(configurer -> configurer.defaultCodecs().maxInMemorySize(10 * 1024 * 1024)) // 10MB limit
+                .codecs(configurer -> configurer.defaultCodecs().maxInMemorySize(10 * 1024 * 1024))
                 .build();
         this.objectMapper = new ObjectMapper();
     }
@@ -55,7 +55,6 @@ public class RouteService {
         }
 
         try {
-            // First, get the optimized route order using Trip API
             String tripUrl = String.format("%s/trip/v1/driving/%s?source=first&roundtrip=false",
                     osrmBaseUrl, coordinates.toString());
 
@@ -70,7 +69,6 @@ public class RouteService {
 
             RouteResponse optimizedRoute = parseOptimizedRouteFromResponse(tripResponse, customers);
 
-            // Now get the actual road geometry using Route API
             RouteGeometryResult geometryResult = fetchRouteGeometryWithMapping(
                     startLat, startLng, customers, optimizedRoute.getOptimizedCustomerIds()
             );
@@ -86,6 +84,127 @@ public class RouteService {
             logger.error("OSRM API call failed for {} customers: {}", customers.size(), e.getMessage());
             throw new RuntimeException("Route optimization failed: " + e.getMessage());
         }
+    }
+
+    private RouteResponse optimizeWithBatching(Double startLat, Double startLng, List<Customer> customers) {
+        logger.info("Processing {} customers with Haversine pre-sorting and batching", customers.size());
+
+        // Sort customers using nearest neighbor before batching
+        List<Customer> sortedCustomers = sortCustomersByNearestNeighbor(startLat, startLng, customers);
+
+        // Create batches from sorted list
+        List<List<Customer>> batches = createSimpleBatches(sortedCustomers, BATCH_SIZE);
+        List<Long> allOptimizedIds = new ArrayList<>();
+        List<List<Double>> combinedGeometry = new ArrayList<>();
+        double totalDistance = 0.0;
+
+        Double lastLat = startLat;
+        Double lastLng = startLng;
+
+        for (int i = 0; i < batches.size(); i++) {
+            List<Customer> batch = batches.get(i);
+            logger.info("Processing batch {} with {} customers", i + 1, batch.size());
+
+            try {
+                RouteResponse batchResponse = optimizeSingleBatch(lastLat, lastLng, batch);
+                allOptimizedIds.addAll(batchResponse.getOptimizedCustomerIds());
+
+                if (batchResponse.getRouteGeometry() != null) {
+                    if (i == 0) {
+                        combinedGeometry.addAll(batchResponse.getRouteGeometry());
+                    } else if (batchResponse.getRouteGeometry().size() > 1) {
+                        combinedGeometry.addAll(batchResponse.getRouteGeometry().subList(1, batchResponse.getRouteGeometry().size()));
+                    }
+                }
+
+                String distanceStr = batchResponse.getTotalDistance().replace(" km", "").replace(",", ".");
+                totalDistance += Double.parseDouble(distanceStr);
+
+                // Use last customer from sorted list for next batch start
+                if (i < batches.size() - 1) {
+                    Customer lastCustomer = batch.get(batch.size() - 1);
+                    lastLat = lastCustomer.getLatitude();
+                    lastLng = lastCustomer.getLongitude();
+                }
+
+            } catch (Exception e) {
+                logger.error("Failed to optimize batch {}: {}", i + 1, e.getMessage());
+                allOptimizedIds.addAll(batch.stream().map(Customer::getMyId).collect(Collectors.toList()));
+            }
+        }
+
+        return new RouteResponse(
+                allOptimizedIds,
+                String.format("%.3f km", totalDistance).replace(".", ","),
+                combinedGeometry.isEmpty() ? null : combinedGeometry,
+                null
+        );
+    }
+
+    private List<Customer> sortCustomersByNearestNeighbor(Double startLat, Double startLng, List<Customer> customers) {
+        if (customers.isEmpty()) {
+            return new ArrayList<>();
+        }
+
+        List<Customer> remaining = new ArrayList<>(customers);
+        List<Customer> sorted = new ArrayList<>();
+
+        Double currentLat = startLat;
+        Double currentLng = startLng;
+
+        while (!remaining.isEmpty()) {
+            Customer nearest = findNearestCustomer(currentLat, currentLng, remaining);
+            sorted.add(nearest);
+            remaining.remove(nearest);
+            currentLat = nearest.getLatitude();
+            currentLng = nearest.getLongitude();
+        }
+
+        logger.info("Sorted {} customers using nearest neighbor algorithm", sorted.size());
+        return sorted;
+    }
+
+    private Customer findNearestCustomer(Double lat, Double lng, List<Customer> customers) {
+        Customer nearest = null;
+        double minDistance = Double.MAX_VALUE;
+
+        for (Customer customer : customers) {
+            double distance = calculateHaversineDistance(lat, lng,
+                    customer.getLatitude(),
+                    customer.getLongitude());
+            if (distance < minDistance) {
+                minDistance = distance;
+                nearest = customer;
+            }
+        }
+
+        return nearest;
+    }
+
+    private double calculateHaversineDistance(Double lat1, Double lng1, Double lat2, Double lng2) {
+        final double R = 6371.0; // Earth radius in kilometers
+
+        double dLat = Math.toRadians(lat2 - lat1);
+        double dLng = Math.toRadians(lng2 - lng1);
+
+        double a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+                Math.cos(Math.toRadians(lat1)) * Math.cos(Math.toRadians(lat2)) *
+                        Math.sin(dLng / 2) * Math.sin(dLng / 2);
+
+        double c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+
+        return R * c;
+    }
+
+    private List<List<Customer>> createSimpleBatches(List<Customer> customers, int maxBatchSize) {
+        List<List<Customer>> batches = new ArrayList<>();
+
+        for (int i = 0; i < customers.size(); i += maxBatchSize) {
+            int endIndex = Math.min(i + maxBatchSize, customers.size());
+            batches.add(new ArrayList<>(customers.subList(i, endIndex)));
+        }
+
+        return batches;
     }
 
     private static class RouteGeometryResult {
@@ -143,11 +262,9 @@ public class RouteService {
 
             Map<String, Object> route = routes.get(0);
 
-            // Get geometry
             Map<String, Object> geometry = (Map<String, Object>) route.get("geometry");
             List<List<Double>> coordinates = (List<List<Double>>) geometry.get("coordinates");
 
-            // Parse legs to create mapping
             Map<Long, int[]> customerMapping = new HashMap<>();
             List<Map<String, Object>> legs = (List<Map<String, Object>>) route.get("legs");
 
@@ -156,11 +273,9 @@ public class RouteService {
             if (legs != null && !legs.isEmpty()) {
                 int currentIndex = 0;
 
-                // Each leg represents a segment from one waypoint to the next
                 for (int i = 0; i < legs.size() && i < optimizedCustomerIds.size(); i++) {
                     Map<String, Object> leg = legs.get(i);
 
-                    // Get the number of geometry points in this leg
                     int legPointCount = 0;
                     Map<String, Object> annotation = (Map<String, Object>) leg.get("annotation");
 
@@ -172,10 +287,8 @@ public class RouteService {
                         }
                     }
 
-                    // If no annotation, estimate based on distance
                     if (legPointCount == 0) {
                         Double distance = ((Number) leg.get("distance")).doubleValue();
-                        // Rough estimate: 1 point per 50 meters
                         legPointCount = Math.max(1, (int)(distance / 50));
                         logger.debug("Leg {} estimated {} points based on distance {}", i, legPointCount, distance);
                     }
@@ -188,7 +301,6 @@ public class RouteService {
                 }
             } else {
                 logger.warn("No legs found in route response, creating simple mapping");
-                // Fallback: divide geometry equally among customers
                 if (!optimizedCustomerIds.isEmpty() && coordinates != null) {
                     int pointsPerCustomer = coordinates.size() / optimizedCustomerIds.size();
                     for (int i = 0; i < optimizedCustomerIds.size(); i++) {
@@ -206,73 +318,6 @@ public class RouteService {
             logger.error("Failed to fetch route geometry with mapping: {}", e.getMessage(), e);
             return null;
         }
-    }
-
-    private RouteResponse optimizeWithBatching(Double startLat, Double startLng, List<Customer> customers) {
-        logger.info("Processing {} customers with simple batching", customers.size());
-
-        List<List<Customer>> batches = createSimpleBatches(customers, BATCH_SIZE);
-        List<Long> allOptimizedIds = new ArrayList<>();
-        List<List<Double>> combinedGeometry = new ArrayList<>();
-        double totalDistance = 0.0;
-
-        Double lastLat = startLat;
-        Double lastLng = startLng;
-
-        for (int i = 0; i < batches.size(); i++) {
-            List<Customer> batch = batches.get(i);
-            logger.info("Processing batch {} with {} customers", i + 1, batch.size());
-
-            try {
-                RouteResponse batchResponse = optimizeSingleBatch(lastLat, lastLng, batch);
-                allOptimizedIds.addAll(batchResponse.getOptimizedCustomerIds());
-
-                if (batchResponse.getRouteGeometry() != null) {
-                    if (i == 0) {
-                        combinedGeometry.addAll(batchResponse.getRouteGeometry());
-                    } else if (batchResponse.getRouteGeometry().size() > 1) {
-                        combinedGeometry.addAll(batchResponse.getRouteGeometry().subList(1, batchResponse.getRouteGeometry().size()));
-                    }
-                }
-
-                String distanceStr = batchResponse.getTotalDistance().replace(" km", "").replace(",", ".");
-                totalDistance += Double.parseDouble(distanceStr);
-
-                if (!batch.isEmpty() && !batchResponse.getOptimizedCustomerIds().isEmpty()) {
-                    Long lastCustomerId = batchResponse.getOptimizedCustomerIds().get(batchResponse.getOptimizedCustomerIds().size() - 1);
-                    Customer lastCustomer = batch.stream()
-                            .filter(c -> c.getMyId().equals(lastCustomerId))
-                            .findFirst()
-                            .orElse(null);
-                    if (lastCustomer != null) {
-                        lastLat = lastCustomer.getLatitude();
-                        lastLng = lastCustomer.getLongitude();
-                    }
-                }
-
-            } catch (Exception e) {
-                logger.error("Failed to optimize batch {}: {}", i + 1, e.getMessage());
-                allOptimizedIds.addAll(batch.stream().map(Customer::getMyId).collect(Collectors.toList()));
-            }
-        }
-
-        return new RouteResponse(
-                allOptimizedIds,
-                String.format("%.3f km", totalDistance).replace(".", ","),
-                combinedGeometry.isEmpty() ? null : combinedGeometry,
-                null
-        );
-    }
-
-    private List<List<Customer>> createSimpleBatches(List<Customer> customers, int maxBatchSize) {
-        List<List<Customer>> batches = new ArrayList<>();
-
-        for (int i = 0; i < customers.size(); i += maxBatchSize) {
-            int endIndex = Math.min(i + maxBatchSize, customers.size());
-            batches.add(new ArrayList<>(customers.subList(i, endIndex)));
-        }
-
-        return batches;
     }
 
     private RouteResponse parseOptimizedRouteFromResponse(String jsonResponse, List<Customer> customers) {

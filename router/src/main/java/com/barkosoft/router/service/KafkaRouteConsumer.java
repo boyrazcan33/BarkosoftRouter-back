@@ -46,22 +46,29 @@ public class KafkaRouteConsumer {
         logger.info("Processing batch {} for job {} (partition: {})", batchIndex, jobId, partition);
 
         try {
+            // Use previous batch's last location if available, otherwise use original start
+            Double effectiveStartLat = message.getPreviousBatchLastLat() != null ?
+                    message.getPreviousBatchLastLat() : message.getStartLatitude();
+            Double effectiveStartLng = message.getPreviousBatchLastLng() != null ?
+                    message.getPreviousBatchLastLng() : message.getStartLongitude();
+
+            logger.debug("Batch {} using start point: ({}, {})", batchIndex, effectiveStartLat, effectiveStartLng);
+
             RouteResponse batchResponse = routeService.optimizeSingleBatch(
-                    message.getStartLatitude(),
-                    message.getStartLongitude(),
+                    effectiveStartLat,
+                    effectiveStartLng,
                     message.getBatch()
             );
 
             double distanceKm = parseDistanceFromResponse(batchResponse.getTotalDistance());
 
-            // Create BatchResult with geometry and mapping
             BatchResult result = new BatchResult(
                     jobId,
                     batchIndex,
                     batchResponse.getOptimizedCustomerIds(),
                     distanceKm,
                     batchResponse.getRouteGeometry(),
-                    batchResponse.getCustomerGeometryMapping() // Pass mapping through
+                    batchResponse.getCustomerGeometryMapping()
             );
 
             jobTrackingService.addBatchResult(result);
@@ -86,7 +93,7 @@ public class KafkaRouteConsumer {
             errorResult.setOptimizedCustomerIds(fallbackIds);
             errorResult.setDistanceKm(0.0);
             errorResult.setRouteGeometry(null);
-            errorResult.setCustomerGeometryMapping(null); // No mapping on error
+            errorResult.setCustomerGeometryMapping(null);
             errorResult.setSuccess(false);
             errorResult.setErrorMessage(e.getMessage());
 
